@@ -470,39 +470,61 @@ export default function Dashboard({ onLogout, mockUser }: DashboardProps) {
     }
   }, [activeTab, prevTab]);
 
-  const getRoomStatus = (building: string, room: string) => {
-    // Check if room is under maintenance and locked
-    const isMaintenance = allMaintenanceTickets.some(ticket =>
-      ticket.building === building &&
-      ticket.room === room &&
-      ticket.status !== 'resolved' &&
-      ticket.khoa_phong === true
-    );
-    if (isMaintenance) return { status: 'maintenance', label: 'Bảo trì', color: 'bg-gray-100 border-gray-200 text-gray-400' };
-
-    const now = currentTime;
-    const hanoiTime = new Intl.DateTimeFormat('en-CA', {
+  // Pre-calculate current time parameters to avoid O(N) instantiations of Intl.DateTimeFormat
+  const { hanoiTime, todayStr, todayDayOfWeek } = useMemo(() => {
+    const hanoiTimeStr = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Asia/Ho_Chi_Minh',
       hour: '2-digit',
       minute: '2-digit',
       hour12: false
-    }).format(now);
+    }).format(currentTime);
     
-    const todayStr = getHanoiDate();
+    const today = getHanoiDate();
     const dayMap: Record<number, string> = {
       0: 'Chủ nhật', 1: 'Thứ 2', 2: 'Thứ 3', 3: 'Thứ 4', 4: 'Thứ 5', 5: 'Thứ 6', 6: 'Thứ 7'
     };
-    const todayDayOfWeek = dayMap[now.getDay()];
+    const dayOfWeek = dayMap[currentTime.getDay()];
 
-    const activeCourse = allCourses.find(course => {
-      if (course.building !== building || course.room !== room) return false;
-      if (course.dayOfWeek !== todayDayOfWeek) return false;
-      if (todayStr < course.startDate || todayStr > course.endDate) return false;
+    return { hanoiTime: hanoiTimeStr, todayStr: today, todayDayOfWeek: dayOfWeek };
+  }, [currentTime]); // currentTime updates every minute
+
+  // O(1) Lookup for Active Maintenance Tickets
+  const activeMaintenanceMap = useMemo(() => {
+    const map = new Set<string>();
+    allMaintenanceTickets.forEach(ticket => {
+      if (ticket.status !== 'resolved' && ticket.khoa_phong === true) {
+        map.add(`${ticket.building}_${ticket.room}`);
+      }
+    });
+    return map;
+  }, [allMaintenanceTickets]);
+
+  // O(1) Lookup for Active Courses
+  const activeCoursesMap = useMemo(() => {
+    const map = new Map<string, Course>();
+    allCourses.forEach(course => {
+      // Filter out courses that don't match today's date or day of week
+      if (course.dayOfWeek !== todayDayOfWeek) return;
+      if (todayStr < course.startDate || todayStr > course.endDate) return;
       
       const [start, end] = course.timeRange.split(' - ');
-      return hanoiTime >= start && hanoiTime <= end;
+      if (hanoiTime >= start && hanoiTime <= end) {
+        map.set(`${course.building}_${course.room}`, course);
+      }
     });
+    return map;
+  }, [allCourses, todayDayOfWeek, todayStr, hanoiTime]);
 
+  const getRoomStatus = (building: string, room: string) => {
+    const roomKey = `${building}_${room}`;
+
+    // O(1) Check if room is under maintenance and locked
+    if (activeMaintenanceMap.has(roomKey)) {
+      return { status: 'maintenance', label: 'Bảo trì', color: 'bg-gray-100 border-gray-200 text-gray-400' };
+    }
+
+    // O(1) Check if room is occupied by a course right now
+    const activeCourse = activeCoursesMap.get(roomKey);
     if (activeCourse) {
       return { 
         status: 'occupied', 
